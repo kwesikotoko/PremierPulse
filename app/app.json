@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "Premier Pulse",
+    "slug": "premier-pulse",
+    "version": "0.1.0",
+    "sdkVersion": "51.0.0",
+    "platforms": ["ios", "android", "web"],
+    "extra": {
+      "SUPABASE_URL": "https://YOUR-PROJECT.supabase.co",
+      "SUPABASE_ANON_KEY": "YOUR_SUPABASE_ANON_KEY",
+      "API_BASE": "http://localhost:4000",
+      "SENTRY_DSN": ""
+    }
+  }
+}
