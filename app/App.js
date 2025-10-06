@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { SafeAreaView, Text, TextInput, Button, View, FlatList } from 'react-native';
+import { SafeAreaView, Text, TextInput, Button, View, FlatList, ScrollView } from 'react-native';
 import Constants from 'expo-constants';
 import * as Sentry from '@sentry/react-native';
 import { createClient } from '@supabase/supabase-js';
@@ -22,6 +22,8 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
   const [trips, setTrips] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [leaderboard, setLeaderboard] = useState([]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -35,6 +37,8 @@ export default function App() {
     if (!session) return;
     const socket = io(API_BASE, { auth: { token: session.access_token } });
     socket.on('hello', (msg) => console.log('socket hello', msg));
+    socket.on('summary:update', (data) => setSummary(data));
+    socket.on('leaderboard:update', (data) => setLeaderboard(data));
     return () => socket.disconnect();
   }, [session]);
 
@@ -54,6 +58,24 @@ export default function App() {
     });
     const json = await res.json();
     setTrips(json.trips || []);
+  };
+
+  const fetchSummary = async () => {
+    if (!session) return;
+    const res = await fetch(`${API_BASE}/summary?days=30`, {
+      headers: { Authorization: `Bearer ${session.access_token}` }
+    });
+    const json = await res.json();
+    setSummary(json.summary);
+  };
+
+  const fetchLeaderboard = async () => {
+    if (!session) return;
+    const res = await fetch(`${API_BASE}/leaderboard?days=30&limit=10`, {
+      headers: { Authorization: `Bearer ${session.access_token}` }
+    });
+    const json = await res.json();
+    setLeaderboard(json.leaderboard || []);
   };
 
   const signIn = async () => {
@@ -79,6 +101,8 @@ export default function App() {
           <Text>Logged in</Text>
           <Button title="Load Profile" onPress={fetchMe} />
           <Button title="Load Trips" onPress={fetchTrips} />
+          <Button title="Load Summary" onPress={fetchSummary} />
+          <Button title="Load Leaderboard" onPress={fetchLeaderboard} />
           <Button title="Sign out" onPress={signOut} />
 
           {profile && (
@@ -87,6 +111,23 @@ export default function App() {
               <Text>DriverId: {profile.driver?.id}</Text>
             </View>
           )}
+
+          {summary && (
+            <View style={{ marginTop: 12 }}>
+              <Text>Trips (30d): {summary.totalTrips}</Text>
+              <Text>Total Distance: {summary.totalDistanceKm?.toFixed(1) ?? 0} km</Text>
+              <Text>Avg Score: {summary.averageScore?.toFixed?.(1) ?? '-'}</Text>
+            </View>
+          )}
+
+          <View style={{ marginTop: 12 }}>
+            <Text>Leaderboard (30d)</Text>
+            {leaderboard.map((row) => (
+              <View key={row.driverId} style={{ paddingVertical: 4 }}>
+                <Text>#{row.rank} {row.name} — score {row.averageScore?.toFixed?.(1) ?? '-'}</Text>
+              </View>
+            ))}
+          </View>
 
           <FlatList
             style={{ marginTop: 12 }}

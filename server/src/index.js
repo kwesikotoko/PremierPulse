@@ -62,6 +62,56 @@ app.get('/metrics', async (req, res) => {
   }
 });
 
+// Helpers for summaries and leaderboards
+async function computeDriverSummary(driverId, days) {
+  const where = { driverId };
+  if (days && Number.isFinite(Number(days))) {
+    where.startTime = { gte: new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000) };
+  }
+  const agg = await prisma.trip.aggregate({
+    where,
+    _count: { _all: true },
+    _sum: { distanceKm: true, fuelUsedLiters: true },
+    _avg: { score: true, averageSpeedKph: true }
+  });
+  const lastTrip = await prisma.trip.findFirst({ where: { driverId }, orderBy: { startTime: 'desc' } });
+  return {
+    totalTrips: agg._count?._all || 0,
+    totalDistanceKm: agg._sum?.distanceKm || 0,
+    totalFuelLiters: agg._sum?.fuelUsedLiters || 0,
+    averageScore: agg._avg?.score || null,
+    averageSpeedKph: agg._avg?.averageSpeedKph || null,
+    lastTrip
+  };
+}
+
+async function getLeaderboard(days, limit = 10) {
+  const where = {};
+  if (days && Number.isFinite(Number(days))) {
+    where.startTime = { gte: new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000) };
+  }
+  const grouped = await prisma.trip.groupBy({
+    by: ['driverId'],
+    where,
+    _avg: { score: true },
+    _sum: { distanceKm: true },
+    _count: { _all: true },
+    orderBy: { _avg: { score: 'desc' } },
+    take: limit
+  });
+  const driverIds = grouped.map((g) => g.driverId);
+  const drivers = await prisma.driver.findMany({ where: { id: { in: driverIds } } });
+  const driverMap = new Map(drivers.map((d) => [d.id, d]));
+  return grouped.map((g, idx) => ({
+    rank: idx + 1,
+    driverId: g.driverId,
+    name: driverMap.get(g.driverId)?.name || 'Driver',
+    averageScore: g._avg.score,
+    trips: g._count._all,
+    totalDistanceKm: g._sum.distanceKm || 0
+  }));
+}
+
 // Authenticated routes
 app.use(authMiddleware);
 
@@ -87,7 +137,32 @@ app.post('/trips', async (req, res) => {
     fuelUsedLiters,
     score
   }});
+  // Emit updates to this driver and global leaderboard
+  try {
+    const ioInstance = req.app.get('io');
+    if (ioInstance) {
+      const summary = await computeDriverSummary(req.driver.id, 30);
+      const leaderboard = await getLeaderboard(30, 10);
+      ioInstance.to(`driver:${req.driver.id}`).emit('summary:update', summary);
+      ioInstance.emit('leaderboard:update', leaderboard);
+    }
+  } catch (e) {
+    // ignore emit errors
+  }
   res.status(201).json({ trip });
+});
+
+app.get('/summary', async (req, res) => {
+  const days = req.query.days ? Number(req.query.days) : undefined;
+  const summary = await computeDriverSummary(req.driver.id, days);
+  res.json({ summary });
+});
+
+app.get('/leaderboard', async (req, res) => {
+  const days = req.query.days ? Number(req.query.days) : undefined;
+  const limit = req.query.limit ? Number(req.query.limit) : 10;
+  const leaderboard = await getLeaderboard(days, limit);
+  res.json({ leaderboard });
 });
 
 // Error handler
@@ -100,12 +175,20 @@ const io = new Server(server, {
   cors: { origin: corsOrigins, credentials: true }
 });
 
-ios.use(socketAuth);
+io.use(socketAuth);
 
 io.on('connection', (socket) => {
   // Example: emit live score updates in future
   socket.emit('hello', { message: 'Connected to Premier Pulse' });
+  // Join a per-driver room for targeted updates
+  const driverId = socket.data?.driver?.id;
+  if (driverId) {
+    socket.join(`driver:${driverId}`);
+  }
 });
+
+// Expose io to routes
+app.set('io', io);
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
